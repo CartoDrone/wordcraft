@@ -341,7 +341,18 @@ fn route_f6(app: &WordApp, ctx: &egui::Context) {
 /// Draw the open panes around the document. Call before the canvas's `CentralPanel`.
 pub fn show(app: &mut WordApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
-    let open = open(app);
+    let mut open = open(app);
+    let shown_id = app.window_id("task_panes_shown");
+    let before: Vec<Pane> = ui.data(|d| d.get_temp(shown_id)).unwrap_or_default();
+    if crate::chrome::is_narrow(ui.ctx().content_rect().width())
+        && let Some(keep) = narrow_keep(&open, &before)
+    {
+        for pane in open.iter().copied().filter(|p| *p != keep).collect::<Vec<_>>() {
+            close(app, pane);
+        }
+        open = vec![keep];
+    }
+    ui.data_mut(|d| d.insert_temp(shown_id, open.clone()));
     if !open.contains(&Pane::FormatShape) {
         crate::format_shape::forget_drag(ui.ctx());
     }
@@ -360,6 +371,16 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
     if out.to_document {
         app.canvas.want_focus = true;
     }
+}
+
+/// On a narrow window ([`crate::chrome::is_narrow`]) only one task pane fits beside the document:
+/// the one to keep when more than one is `open`, the newest (open now but not last frame, in
+/// `before`), else the last. `None` when at most one is open.
+fn narrow_keep(open: &[Pane], before: &[Pane]) -> Option<Pane> {
+    if open.len() < 2 {
+        return None;
+    }
+    open.iter().rev().find(|p| !before.contains(p)).or(open.last()).copied()
 }
 
 /// Run a request from the pane host through the pane's commands and the UI preferences.
@@ -1230,6 +1251,18 @@ mod tests {
     use super::{Content, Pane};
     use craft_ui::panes::PaneContent;
     use egui::vec2;
+
+    /// A narrow window keeps one task pane: the one just opened, else the last of those open.
+    #[test]
+    fn narrow_keeps_the_newest_pane() {
+        use Pane::{Comments, Navigation, Styles};
+        assert_eq!(super::narrow_keep(&[], &[]), None);
+        assert_eq!(super::narrow_keep(&[Styles], &[]), None, "one pane already fits");
+        assert_eq!(super::narrow_keep(&[Navigation, Styles], &[Styles]), Some(Navigation), "the newly opened one");
+        assert_eq!(super::narrow_keep(&[Navigation, Styles, Comments], &[Navigation]), Some(Comments));
+        assert_eq!(super::narrow_keep(&[Navigation, Styles], &[]), Some(Styles), "restored together: the last");
+        assert_eq!(super::narrow_keep(&[Navigation, Styles], &[Navigation, Styles]), Some(Styles));
+    }
 
     /// #1902: Clipboard Delete returns focus to the document like paste does.
     #[test]

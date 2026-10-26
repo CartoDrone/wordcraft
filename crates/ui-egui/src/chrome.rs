@@ -24,6 +24,17 @@ pub(crate) fn dictionary_problem(lang: &str, unreadable: &Option<(std::path::Pat
     }
 }
 
+/// Window width, in points, below which the chrome takes its narrow (phone) layout: the title bar
+/// drops the Quick Access Toolbar and Discord and shows Search as an icon, the status bar keeps only
+/// its essentials, and one task pane is open at a time. Wide enough to catch a phone in landscape at
+/// 150% scale (about 610 points), where the full title bar runs over the document title.
+pub(crate) const NARROW_WIDTH: f32 = 640.0;
+
+/// Whether a window `width` points wide gets the narrow layout ([`NARROW_WIDTH`]).
+pub(crate) fn is_narrow(width: f32) -> bool {
+    width < NARROW_WIDTH
+}
+
 /// The Quick Access Toolbar's button for command `id`.
 pub(crate) fn qat_button_id(id: &str) -> egui::Id {
     egui::Id::unique(("qat_button", id))
@@ -285,6 +296,7 @@ pub fn title_bar(app: &mut WordApp, ui: &mut Ui) {
     let bar = app.mac_titlebar;
     let left = if mac { bar.content_left as i8 } else { 8 };
     let control_h = if mac { 22.0 } else { 26.0 };
+    let narrow = is_narrow(ui.ctx().content_rect().width());
     egui::Panel::top("title_bar")
         .exact_size(if mac { bar.height } else { 38.0 })
         .frame(egui::Frame::NONE.fill(t.title_bar).inner_margin(egui::Margin { left, right: 10, top: 0, bottom: 0 }))
@@ -341,7 +353,7 @@ pub fn title_bar(app: &mut WordApp, ui: &mut Ui) {
                 }
                 ui.add_space(8.0);
                 // Hidden (#1945): neither the buttons nor the … menu; the title centres as before.
-                if app.ui.quick_access_toolbar {
+                if app.ui.quick_access_toolbar && !narrow {
                     quick_access(ui, app);
                 }
                 qat_end = ui.min_rect().max.x;
@@ -356,7 +368,7 @@ pub fn title_bar(app: &mut WordApp, ui: &mut Ui) {
                         let _ = app.run("ui.backstage", json!({"value": true, "page": "options", "pane": "general"}));
                     }
                     ui.add_space(8.0);
-                    if app.ui.show_discord {
+                    if app.ui.show_discord && !narrow {
                         let (r, resp) = ui.allocate_exact_size(vec2(84.0, 22.0), Sense::click());
                         ui.painter().rect_filled(r, 11.0, if resp.hovered() { t.accent_text } else { t.accent });
                         icons::paint(
@@ -372,7 +384,11 @@ pub fn title_bar(app: &mut WordApp, ui: &mut Ui) {
                         }
                         ui.add_space(8.0);
                     }
-                    search_box(app, ui, control_h);
+                    if narrow {
+                        search_button(app, ui, control_h);
+                    } else {
+                        search_box(app, ui, control_h);
+                    }
                     right_start = ui.min_rect().min.x;
                 });
             });
@@ -446,6 +462,24 @@ fn search_box(app: &mut WordApp, ui: &mut Ui, control_h: f32) {
         ptrack,
         t.text_dim,
     );
+    search_clicked(app, r, resp);
+}
+
+/// Search as a square icon button, in place of the box on a narrow window ([`is_narrow`]); it
+/// opens the same command search.
+fn search_button(app: &mut WordApp, ui: &mut Ui, control_h: f32) {
+    let t = Tokens::get(ui.ctx());
+    let (r, resp) = ui.allocate_exact_size(vec2(32.0, control_h), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tl!("Search commands and help")));
+    if resp.hovered() {
+        ui.painter().rect_filled(r, 6.0, t.hover);
+    }
+    icons::paint(ui.painter(), Rect::from_center_size(r.center(), vec2(16.0, 16.0)), "search", t.icon, t.accent);
+    search_clicked(app, r, resp);
+}
+
+/// The search box's and button's keytip, tooltip and click (command search).
+fn search_clicked(app: &mut WordApp, r: Rect, resp: egui::Response) {
     if app.ui.keytips == crate::keytips::Phase::Tabs {
         app.keytip_rects.push((r, crate::keytips::SEARCH_LETTER.to_string()));
     }
@@ -542,6 +576,9 @@ pub fn focus_ribbon(app: &mut WordApp, ctx: &egui::Context) {
 /// with a tooltip; without a document the bar is empty.
 pub fn status_bar(app: &mut WordApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
+    // Narrow (phone) layout: no language, zoom buttons, slider or view buttons; the percentage
+    // still opens the Zoom dialog.
+    let narrow = is_narrow(ui.ctx().content_rect().width());
     egui::Panel::bottom("status")
         .exact_size(26.0)
         .frame(
@@ -601,22 +638,24 @@ pub fn status_bar(app: &mut WordApp, ui: &mut Ui) {
                     st(ui, label);
                 }
                 // The language at the caret; a click sets the proofing language (Review › Language).
-                let lang = crate::ribbon::caret_language(app);
-                let missing = crate::ribbon::caret_missing_dictionary(app);
-                let unreadable = crate::ribbon::caret_unreadable_dictionary(app);
-                let shown = if unreadable.is_some() {
-                    crate::i18n::fmt(tl!("{language} (dictionary unreadable)"), &[("language", &lang)])
-                } else if missing.is_some() {
-                    crate::i18n::fmt(tl!("{language} (no dictionary)"), &[("language", &lang)])
-                } else {
-                    lang.clone()
-                };
-                let tip = dictionary_problem(&lang, &unreadable, missing).unwrap_or_else(|| tl!("Language").to_string());
-                let resp = st(ui, &shown).on_hover_text(tip);
-                egui::Popup::menu(&resp).show(|ui| {
-                    ui.set_min_width(200.0);
-                    crate::ribbon::language_menu(ui, app);
-                });
+                if !narrow {
+                    let lang = crate::ribbon::caret_language(app);
+                    let missing = crate::ribbon::caret_missing_dictionary(app);
+                    let unreadable = crate::ribbon::caret_unreadable_dictionary(app);
+                    let shown = if unreadable.is_some() {
+                        crate::i18n::fmt(tl!("{language} (dictionary unreadable)"), &[("language", &lang)])
+                    } else if missing.is_some() {
+                        crate::i18n::fmt(tl!("{language} (no dictionary)"), &[("language", &lang)])
+                    } else {
+                        lang.clone()
+                    };
+                    let tip = dictionary_problem(&lang, &unreadable, missing).unwrap_or_else(|| tl!("Language").to_string());
+                    let resp = st(ui, &shown).on_hover_text(tip);
+                    egui::Popup::menu(&resp).show(|ui| {
+                        ui.set_min_width(200.0);
+                        crate::ribbon::language_menu(ui, app);
+                    });
+                }
                 if app.session.doc.settings.track_changes {
                     st(ui, tl!("Track Changes: On"));
                 }
@@ -645,50 +684,52 @@ pub fn status_bar(app: &mut WordApp, ui: &mut Ui) {
                     if zresp.clicked() && !reading {
                         let _ = app.run("ui.dialog", json!({ "name": "zoom" }));
                     }
-                    if small_icon(ui, "plus", tl!("Zoom In")) {
-                        if reading {
-                            let _ = app.run("view.readTextSize", json!({"value": (z + 10.0).min(150.0)}));
-                        } else {
-                            let _ = app.run("view.zoomIn", json!({}));
+                    if !narrow {
+                        if small_icon(ui, "plus", tl!("Zoom In")) {
+                            if reading {
+                                let _ = app.run("view.readTextSize", json!({"value": (z + 10.0).min(150.0)}));
+                            } else {
+                                let _ = app.run("view.zoomIn", json!({}));
+                            }
                         }
-                    }
-                    // Reading zoom changes only reading presentation, never the normal view zoom.
-                    let mut v = if reading { app.session.view.read_zoom } else { app.canvas.scale / crate::canvas::PX_PER_PT };
-                    let slider = egui::Slider::new(&mut v, if reading { 0.75..=1.5 } else { 0.1..=5.0 }).logarithmic(!reading).show_value(false);
-                    ui.spacing_mut().slider_width = 110.0;
-                    let response = ui.add(slider);
-                    response.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::Role::Slider, ui.is_enabled(), if reading { tl!("Text Size") } else { tl!("Zoom") })
-                    });
-                    if response.changed() {
-                        let command = if reading { "view.readTextSize" } else { "view.zoom" };
-                        let _ = app.run(command, json!({"value": (v * 100.0).round()}));
-                    }
-                    if small_icon(ui, "minus", tl!("Zoom Out")) {
-                        if reading {
-                            let _ = app.run("view.readTextSize", json!({"value": (z - 10.0).max(75.0)}));
-                        } else {
-                            let _ = app.run("view.zoomOut", json!({}));
+                        // Reading zoom changes only reading presentation, never the normal view zoom.
+                        let mut v = if reading { app.session.view.read_zoom } else { app.canvas.scale / crate::canvas::PX_PER_PT };
+                        let slider = egui::Slider::new(&mut v, if reading { 0.75..=1.5 } else { 0.1..=5.0 }).logarithmic(!reading).show_value(false);
+                        ui.spacing_mut().slider_width = 110.0;
+                        let response = ui.add(slider);
+                        response.widget_info(|| {
+                            egui::WidgetInfo::labeled(egui::Role::Slider, ui.is_enabled(), if reading { tl!("Text Size") } else { tl!("Zoom") })
+                        });
+                        if response.changed() {
+                            let command = if reading { "view.readTextSize" } else { "view.zoom" };
+                            let _ = app.run(command, json!({"value": (v * 100.0).round()}));
                         }
-                    }
-                    ui.add_space(10.0);
-                    let mode = app.session.view.mode;
-                    let read = app.session.view.read_mode;
-                    for (icon, id, name, on) in [
-                        ("webLayout", "view.webLayout", tl!("Web Layout"), mode == wordcraft_layout::ViewMode::Web),
-                        ("printLayout", "view.printLayout", tl!("Print Layout"), mode == wordcraft_layout::ViewMode::Print && !read),
-                        ("readMode", "view.readMode", tl!("Read Mode"), read),
-                    ] {
-                        let (r, resp) = ui.allocate_exact_size(vec2(22.0, 20.0), Sense::click());
-                        if on {
-                            ui.painter().rect_filled(r, 3.0, t.checked);
-                        } else if resp.hovered() {
-                            ui.painter().rect_filled(r, 3.0, t.hover);
+                        if small_icon(ui, "minus", tl!("Zoom Out")) {
+                            if reading {
+                                let _ = app.run("view.readTextSize", json!({"value": (z - 10.0).max(75.0)}));
+                            } else {
+                                let _ = app.run("view.zoomOut", json!({}));
+                            }
                         }
-                        icons::paint(ui.painter(), r.shrink(3.0), icon, t.icon, t.accent);
-                        resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, on, name));
-                        if resp.on_hover_text(name).clicked() {
-                            let _ = app.run(id, json!({}));
+                        ui.add_space(10.0);
+                        let mode = app.session.view.mode;
+                        let read = app.session.view.read_mode;
+                        for (icon, id, name, on) in [
+                            ("webLayout", "view.webLayout", tl!("Web Layout"), mode == wordcraft_layout::ViewMode::Web),
+                            ("printLayout", "view.printLayout", tl!("Print Layout"), mode == wordcraft_layout::ViewMode::Print && !read),
+                            ("readMode", "view.readMode", tl!("Read Mode"), read),
+                        ] {
+                            let (r, resp) = ui.allocate_exact_size(vec2(22.0, 20.0), Sense::click());
+                            if on {
+                                ui.painter().rect_filled(r, 3.0, t.checked);
+                            } else if resp.hovered() {
+                                ui.painter().rect_filled(r, 3.0, t.hover);
+                            }
+                            icons::paint(ui.painter(), r.shrink(3.0), icon, t.icon, t.accent);
+                            resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, on, name));
+                            if resp.on_hover_text(name).clicked() {
+                                let _ = app.run(id, json!({}));
+                            }
                         }
                     }
                     ui.add_space(8.0);
@@ -918,6 +959,56 @@ mod tests {
         assert_eq!(label(&mut a), "Editing endnote");
         a.run("insert.createHeader", json!({})).unwrap();
         assert_eq!(label(&mut a), "Editing header/footer");
+    }
+
+    fn labels_at(width: f32, show: impl FnMut(&mut Ui)) -> (egui::Context, Vec<(String, f64)>) {
+        let ctx = ctx();
+        ctx.enable_accesskit();
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(width, 800.0))), ..Default::default() };
+        let mut out = ctx.run_ui(input, show);
+        out.textures_delta.clear();
+        let update = out.platform_output.accesskit_update.take().unwrap();
+        let labels =
+            update.nodes.iter().filter_map(|(_, node)| Some((node.label()?.to_string(), node.bounds().map_or(0.0, |b| b.width())))).collect();
+        (ctx, labels)
+    }
+
+    #[test]
+    fn narrow_starts_below_the_breakpoint() {
+        assert!(is_narrow(274.0), "phone portrait at 150%");
+        assert!(is_narrow(609.0), "phone landscape at 150%");
+        assert!(!is_narrow(NARROW_WIDTH));
+        assert!(!is_narrow(1200.0));
+    }
+
+    /// A phone-width window: no Quick Access Toolbar or Discord, and Search is a 32 pt button.
+    /// A wide window keeps the full title bar.
+    #[test]
+    fn narrow_title_bar_drops_quick_access_and_shrinks_search() {
+        let mut a = WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), crate::Services::default());
+        a.ui.show_discord = true;
+        let search = |labels: &[(String, f64)]| labels.iter().find(|(l, _)| l == "Search commands and help").map(|(_, w)| *w);
+        let (ctx, labels) = labels_at(1200.0, |ui| title_bar(&mut a, ui));
+        assert!(ctx.read_response(qat_button_id("file.save")).is_some(), "wide: Save on the Quick Access Toolbar");
+        assert_eq!(search(&labels), Some(260.0), "wide: the search box");
+        let (ctx, labels) = labels_at(400.0, |ui| title_bar(&mut a, ui));
+        assert!(ctx.read_response(qat_button_id("file.save")).is_none(), "narrow: no Quick Access Toolbar");
+        assert!(ctx.read_response(qat_menu_button_id()).is_none(), "narrow: no Quick Access menu");
+        assert_eq!(search(&labels), Some(32.0), "narrow: the search button");
+    }
+
+    /// A phone-width status bar keeps the zoom percentage and Focus, not the slider or view buttons.
+    #[test]
+    fn narrow_status_bar_keeps_focus_and_drops_the_view_buttons() {
+        let mut a = WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), crate::Services::default());
+        let has = |labels: &[(String, f64)], name: &str| labels.iter().any(|(l, _)| l == name);
+        let (_, wide) = labels_at(1200.0, |ui| status_bar(&mut a, ui));
+        let (_, narrow) = labels_at(400.0, |ui| status_bar(&mut a, ui));
+        for name in ["Print Layout", "Web Layout", "Read Mode"] {
+            assert!(has(&wide, name), "wide: {name} is drawn");
+            assert!(!has(&narrow, name), "narrow: {name} is hidden");
+        }
+        assert!(has(&narrow, "Focus"), "narrow: Focus stays");
     }
 
     /// #1903: the footer's Cancel row closes the Undo list without undoing anything.
